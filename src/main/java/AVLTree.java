@@ -274,7 +274,7 @@ public class AVLTree<A> {
         }
 
         public String toString() {
-            return "Node(key=" + this.key + ", hh=" + this.hh + ", left=" + this.left + ", right=" + this.right + ")";
+            return "Pointer(key=" + this.key + ", hh=" + this.hh + ", left=" + this.left + ", right=" + this.right + ")";
         }
     }
 
