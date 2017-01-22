@@ -18,6 +18,7 @@ public class ExternalMergeSortTest {
 
     private static final String INPUT_FILENAME = "input";
     private static final String OUTPUT_FILENAME = "output";
+    private static final String TEMPORARY_CATALOG = "temp";
     private static final int SEED = 12345;
     private static final Random RANDOM = new Random(SEED);
 
@@ -36,20 +37,22 @@ public class ExternalMergeSortTest {
         for (int T : Arrays.asList(100000, 1000000, 10000000)) {
             int minM = (int) Math.sqrt(T) + 1;
             for (int M = minM; M < T; M *= 10) {
-                ExecutionTest test = new ExecutionTest(T, M);
-                test.run();
-                resultList.add(test);
+                for (int k = 2; k <= 32; k *= 2) {
+                    ExecutionTest test = new ExecutionTest(T, M, k);
+                    test.run();
+                    resultList.add(test);
+                }
             }
         }
         for (int i = 0; i < resultList.size(); ++i) {
             ExecutionTest result = resultList.get(i);
-            System.out.println(String.format("%d\t%d\t%d\t%d\t%d", i + 1, result.T, result.M, result.externalTime, result.internalTime));
+            System.out.println(String.format("%d | %d | %d | %d | %d", i + 1, result.T, result.M, result.k, result.externalTime));
         }
     }
 
     @Test
     public void single() {
-        ExecutionTest result = new ExecutionTest(100000, 31700);
+        ExecutionTest result = new ExecutionTest(100000, 31700, 2);
         result.run();
         System.out.println(String.format("%d\t%d\t%d", result.T, result.M, result.externalTime));
     }
@@ -61,14 +64,16 @@ public class ExternalMergeSortTest {
     public class ExecutionTest implements Runnable {
         private final int T;
         private final int M;
+        private final int k;
         private long externalTime;
         private long internalTime;
 
         private final byte[] array;
 
-        public ExecutionTest(int T, int M) {
+        public ExecutionTest(int T, int M, int k) {
             this.T = T;
             this.M = M;
+            this.k = k;
             this.array = new byte[T];
         }
 
@@ -97,7 +102,7 @@ public class ExternalMergeSortTest {
         }
 
         public void internal() {
-            log.info(String.format("Starting internal sorting T = %d, M = %d", T, M));
+            log.info(String.format("Starting internal sorting T = %d, M = %d, k = %d", T, M, k));
 
             long start = System.currentTimeMillis();
             Arrays.sort(array);
@@ -110,9 +115,9 @@ public class ExternalMergeSortTest {
             log.info(String.format("Starting external sorting T = %d, M = %d", T, M));
 
             long start = System.currentTimeMillis();
-            try (ExternalMergeSort mergeSort = new ExternalMergeSort(new File(INPUT_FILENAME), new File(OUTPUT_FILENAME), M)) {
-                mergeSort.execute();
-            }
+            ExternalMergeSort mergeSort = new ExternalMergeSort(new File(INPUT_FILENAME), new File(OUTPUT_FILENAME), new File(TEMPORARY_CATALOG), M, k);
+            mergeSort.execute();
+
             long duration = System.currentTimeMillis() - start;
             this.externalTime = duration;
             log.info("Done in " + (duration / 1000f) + " s");
@@ -131,6 +136,7 @@ public class ExternalMergeSortTest {
                     }
                 }
             }
+
             duration = System.currentTimeMillis() - start;
             log.info("Done in " + (duration / 1000f) + " s");
         }

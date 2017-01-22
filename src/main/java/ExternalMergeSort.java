@@ -7,51 +7,173 @@ import java.util.*;
  * @author Victor Khovanskiy
  */
 @Slf4j
-public class ExternalMergeSort implements Closeable {
-    private final RandomAccessFile input;
-    private final RandomAccessFile output;
+public class ExternalMergeSort {
+    private final File input;
+    private final File output;
     private final int M;
-    private final long T;
-    private final File catalog = new File("catalog/");
+    private final int k;
+    private final File temporaryCatalog;
 
-    public ExternalMergeSort(File input, File output, int M) throws IOException {
-        catalog.mkdirs();
-        this.T = input.length();
-        this.input = new RandomAccessFile(input, "rw");
-        this.output = new RandomAccessFile(output, "rw");
+    public ExternalMergeSort(File input, File output, File temporaryCatalog, int M, int k) throws IOException {
+        this.temporaryCatalog = temporaryCatalog;
+        temporaryCatalog.mkdirs();
+        this.input = input;
+        this.output = output;
         this.M = M;
-    }
-
-    @Override
-    public void close() throws IOException {
-        try {
-            input.close();
-        } finally {
-            output.close();
-        }
+        this.k = k;
     }
 
     private int fileId;
-    private Deque<File> files = new ArrayDeque<>();
+    private Queue<File> files = new ArrayDeque<>();
+
+    public File createNextFile() {
+        File file = new File(temporaryCatalog, "output_" + fileId++);
+        file.deleteOnExit();
+        return file;
+    }
 
     public void splitPhase() throws IOException {
         byte[] buffer = new byte[M];
-        try (FileInputStream inputStream = new FileInputStream("input")) {
+        try (FileInputStream inputStream = new FileInputStream(input)) {
             int bufferSize;
             while ((bufferSize = readBuffer(inputStream, buffer)) > 0) {
                 Arrays.sort(buffer);
-                File file = new File(catalog, "output_" + fileId);
+                File file = createNextFile();
                 files.add(file);
                 try (FileOutputStream outputStream = new FileOutputStream(file, true)) {
                     outputStream.write(buffer, 0, bufferSize);
                 }
-                ++fileId;
             }
         }
     }
 
     public void mergePhase() throws IOException {
+        int L = M / k;
 
+        int bufferOffset = 0;
+        byte[] buffer = new byte[L];
+        while (files.size() > 1) {
+            //debug("Merge iteration");
+            File output = createNextFile();
+
+            PriorityQueue<Node> queue = new PriorityQueue<>();
+            Deque<byte[]> cache = new ArrayDeque<>(k);
+            int maxK = Math.min(k, files.size());
+            for (int i = 0; i < maxK; ++i) {
+                File file = files.poll();
+                //debug(file);
+                byte[] nodeBuffer;
+                if (cache.isEmpty()) {
+                    nodeBuffer = new byte[L];
+                } else {
+                    nodeBuffer = cache.pop();
+                }
+                queue.add(new Node(file, nodeBuffer));
+            }
+
+            try (FileOutputStream outputStream = new FileOutputStream(output, true)) {
+                while (!queue.isEmpty()) {
+                    Node node = queue.poll();
+                    buffer[bufferOffset] = node.next();
+                    ++bufferOffset;
+                    if (bufferOffset == buffer.length) {
+                        outputStream.write(buffer, 0, bufferOffset);
+                        bufferOffset = 0;
+                    }
+                    if (node.hasNext()) {
+                        queue.add(node);
+                    } else {
+                        node.file.delete();
+                        cache.push(node.buffer);
+                    }
+                }
+                if (bufferOffset > 0) {
+                    outputStream.write(buffer, 0, bufferOffset);
+                    bufferOffset = 0;
+                }
+            }
+
+            files.add(output);
+        }
+    }
+
+    public void writeOutputFile() throws IOException {
+        File result = files.poll();
+        byte[] buffer = new byte[M];
+        try (FileInputStream inputStream = new FileInputStream(result); FileOutputStream outputStream = new FileOutputStream(output, true)) {
+            int bufferSize;
+            while ((bufferSize = readBuffer(inputStream, buffer)) > 0) {
+                outputStream.write(buffer, 0, bufferSize);
+            }
+        }
+        result.delete();
+    }
+
+    public void execute() throws IOException {
+        splitPhase();
+        mergePhase();
+        writeOutputFile();
+    }
+
+    public class Node implements Comparable<Node>, Iterator<Byte>, Closeable {
+        private final File file;
+        private final FileInputStream inputStream;
+        private long fileOffset;
+        private final long fileAvailable;
+
+        private final byte[] buffer;
+        private int bufferOffset;
+        private int bufferAvailable;
+
+        public Node(File file, byte[] buffer) throws IOException {
+            this.file = file;
+            this.inputStream = new FileInputStream(file);
+            this.buffer = buffer;
+            this.fileAvailable = file.length();
+        }
+
+        @Override
+        public boolean hasNext() {
+            return fileOffset < fileAvailable;
+        }
+
+        @Override
+        public Byte next() {
+            refill();
+            ++fileOffset;
+            ++bufferOffset;
+            return buffer[bufferOffset - 1];
+        }
+
+        public Byte current() {
+            return buffer[bufferOffset];
+        }
+
+        private void refill() {
+            if (bufferOffset == bufferAvailable && fileOffset < fileAvailable) {
+                try {
+                    bufferAvailable = readBuffer(inputStream, buffer);
+                } catch (IOException e) {
+                    throw new NoSuchElementException(e.getMessage());
+                }
+                if (bufferAvailable <= 0) {
+                    throw new NoSuchElementException();
+                }
+                bufferOffset = 0;
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            inputStream.close();
+        }
+
+        @Override
+        public int compareTo(Node another) {
+            refill();
+            another.refill();
+            return Byte.compare(this.current(), another.current());
+        }
     }
 
     public int readBuffer(FileInputStream inputStream, byte[] buffer) throws IOException {
@@ -66,226 +188,11 @@ public class ExternalMergeSort implements Closeable {
         return bufferOffset;
     }
 
-    public int phase1() throws IOException {
-        byte[] block = new byte[M];
-        int length;
-        int blockNumber = 0;
-        do {
-            length = readBlock(input, block, 0, M);
-            if (length == 0) {
-                continue;
-            }
-            Arrays.sort(block);
-            debug(Arrays.toString(block));
-            input.seek(blockNumber * M);
-            input.write(block, 0, length);
-            ++blockNumber;
-        } while (length == M);
-        return blockNumber;
-    }
-
-    public void phase2() throws IOException {
-        final int k = 16;
-
-        int bufferSize = M;
-        // (k + 1) * L <= M
-
-        RandomAccessFile inputAtIteration = input;
-        RandomAccessFile outputAtIteration = output;
-        long blockSizeAtIteration = M;
-
-        Deque<byte[]> buffersCache = new ArrayDeque<>();
-        byte[] outputBuffer = new byte[bufferSize];
-        while (blockSizeAtIteration < T) {
-            debug("Новая итерация с blockSizeAtIteration = " + blockSizeAtIteration, true);
-            inputAtIteration.seek(0);
-            outputAtIteration.seek(0);
-            long fileOffset = 0;
-            int blocksCountAtIteration = getBlocksNumber(T, blockSizeAtIteration);
-            for (int blockMerged = 0; blockMerged < blocksCountAtIteration; blockMerged += k) {
-                PriorityQueue<Pointer> heap = new PriorityQueue<>();
-                for (int i = 0; i < Math.min(k, blocksCountAtIteration - blockMerged); ++i) {
-                    long available = Math.min(T - fileOffset, blockSizeAtIteration);
-
-                    byte[] nodeBuffer;
-                    if (buffersCache.isEmpty()) {
-                        nodeBuffer = new byte[bufferSize];
-                    } else {
-                        nodeBuffer = buffersCache.pop();
-                    }
-                    heap.add(new Pointer(inputAtIteration, i, nodeBuffer, fileOffset, available));
-                    fileOffset += blockSizeAtIteration;
-                }
-
-                int bufferIndex = 0;
-                while (!heap.isEmpty()) {
-                    Pointer pointer = heap.poll();
-                    debug("Извлекаем " + pointer);
-                    byte element = pointer.next();
-                    debug("Пишем в буфер " + element);
-                    outputBuffer[bufferIndex] = element;
-                    ++bufferIndex;
-                    // Если буфер для записи заполнен, то пишем его на диск и обнуляем смещение.
-                    if (bufferIndex == outputBuffer.length) {
-                        debug("Пишем буфер в файл");
-                        outputAtIteration.write(outputBuffer, 0, outputBuffer.length);
-                        bufferIndex = 0;
-                    }
-                    // Если узел содержит элементы, то добавляет его обратно в кучу.
-                    if (pointer.hasNext()) {
-                        heap.add(pointer);
-                    } else {
-                        buffersCache.push(pointer.buffer);
-                    }
-                }
-                if (bufferIndex > 0) {
-                    outputAtIteration.write(outputBuffer, 0, bufferIndex);
-                }
-            }
-            if (inputAtIteration == output) {
-                inputAtIteration = input;
-                outputAtIteration = output;
-            } else {
-                inputAtIteration = output;
-                outputAtIteration = input;
-            }
-            blockSizeAtIteration <<= 1;
-        }
-
-        if (outputAtIteration != input) {
-            input.seek(0);
-            output.seek(0);
-            byte[] buffer = new byte[M];
-            int read;
-            while ((read = readBlock(input, buffer, 0, buffer.length)) > 0) {
-                output.write(buffer, 0, read);
-            }
-        }
-    }
-
     public void debug(Object object) {
-        //System.out.println(object);
+        System.out.println(object);
     }
 
     public void debug(Object object, boolean shouldWrite) {
         System.out.println(object);
-    }
-
-    public static int getBlocksNumber(long totalSize, long blockSize) {
-        return (int) Math.ceil(1d * totalSize / blockSize);
-    }
-
-    public void execute() throws IOException {
-        //phase1();
-        //phase2();
-        splitPhase();
-    }
-
-    protected void byte2byte(byte[] buf, Byte[] temp, int length) {
-        for (int i = 0; i < length; ++i) {
-            temp[i] = buf[i];
-        }
-    }
-
-    @FunctionalInterface
-    protected interface Converter<A, B> {
-        void accept(A a, B b, int length);
-    }
-
-    protected class Pointer implements Comparable<Pointer>, Iterator<Byte> {
-        private final int number;
-        private final byte[] buffer;
-
-        /**
-         * Позиция текущего элемента в буфере
-         */
-        private int bufferIndex;
-        /**
-         * Доступный размер буфера
-         */
-        private int bufferAvailable;
-
-        /**
-         * Смещение блока относительно начала файла
-         */
-        private final long fileOffset;
-        /**
-         * Смещение относительно начала блока
-         */
-        private long blockOffset;
-        /**
-         * Размер блока
-         */
-        private final long blockAvailable;
-
-        private final RandomAccessFile file;
-
-        public Pointer(RandomAccessFile file, int ordinal, byte[] buffer, long fileOffset, long blockAvailable) {
-            if (fileOffset + blockAvailable > T) {
-                throw new AssertionError();
-            }
-            this.file = file;
-            this.number = ordinal;
-            this.buffer = buffer;
-            this.fileOffset = fileOffset;
-            this.blockAvailable = blockAvailable;
-        }
-
-        @Override
-        public int compareTo(Pointer another) {
-            fetch();
-            another.fetch();
-            return Byte.compare(this.buffer[bufferIndex], another.buffer[another.bufferIndex]);
-        }
-
-        @Override
-        public boolean hasNext() {
-            return blockOffset < blockAvailable;
-        }
-
-        @Override
-        public Byte next() {
-            fetch();
-            ++bufferIndex;
-            ++blockOffset;
-            return buffer[bufferIndex - 1];
-        }
-
-        protected void fetch() {
-            if (bufferIndex == bufferAvailable && blockOffset < blockAvailable) {
-                int read;
-                try {
-                    file.seek(fileOffset + blockOffset);
-                    read = readBlock(file, buffer, 0, buffer.length);
-                } catch (IOException e) {
-                    throw new NoSuchElementException(e.getMessage());
-                }
-                if (read == 0) {
-                    throw new NoSuchElementException();
-                }
-                // Сдвигаем смещение относительно начала блока на количество прочитанных элементов буфера
-                //blockOffset += bufferAvailable;
-                // Доступный размер буфера равен количеству прочитанных элементов
-                bufferAvailable = read;
-                // Обнуляем позицию в буфере
-                bufferIndex = 0;
-            }
-        }
-
-        public String toString() {
-            return "Pointer(number=" + this.number + ", buffer=" + Arrays.toString(this.buffer) + ", bufferIndex=" + this.bufferIndex + ", bufferAvailable=" + this.bufferAvailable + ", fileOffset=" + this.fileOffset + ", blockOffset=" + this.blockOffset + ", blockAvailable=" + this.blockAvailable + ")";
-        }
-    }
-
-    protected int readBlock(RandomAccessFile file, byte[] block, int offset, int length) throws IOException {
-        int n = 0;
-        do {
-            int count = file.read(block, offset + n, length - n);
-            if (count < 0) {
-                return n;
-            }
-            n += count;
-        } while (n < length);
-        return n;
     }
 }
