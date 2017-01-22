@@ -22,7 +22,7 @@ public class ExternalMergeSort implements Closeable {
 
     public ExternalMergeSort(File input, File output, int blockSize) throws IOException {
         this.totalSize = input.length();
-        if (blockSize * blockSize < totalSize) {
+        if ((long) blockSize * blockSize < totalSize) {
             throw new IllegalArgumentException(String.format("Block's size must be greater or equal than block's number: %1$d * %1$d < %2$d (min %3$d)", blockSize, totalSize, (int) Math.sqrt(totalSize)));
         }
         this.input = new RandomAccessFile(input, "rw");
@@ -68,15 +68,24 @@ public class ExternalMergeSort implements Closeable {
             heap.add(new Pointer<>(i, new Byte[bufferSize], available, this::byte2byte));
         }
 
+        int blockIndex = 0;
         while (!heap.isEmpty()) {
             Pointer<Byte> pointer = heap.poll();
             //System.out.println(pointer);
             byte element = pointer.next();
             //System.out.println("Put " + element);
-            output.writeByte(element);
+            block[blockIndex] = element;
+            ++blockIndex;
+            if (blockIndex == block.length) {
+                output.write(block, 0, block.length);
+                blockIndex = 0;
+            }
             if (pointer.hasNext()) {
                 heap.add(pointer);
             }
+        }
+        if (blockIndex > 0) {
+            output.write(block, 0, blockIndex);
         }
     }
 
