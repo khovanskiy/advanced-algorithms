@@ -22,15 +22,6 @@ public class ExternalMergeSortTest {
     private static final int SEED = 12345;
     private static final Random RANDOM = new Random(SEED);
 
-    /*@Test
-    public void internal() {
-        log.info("Starting internal sorting...");
-        long start = System.currentTimeMillis();
-        Arrays.sort(array);
-        long duration = System.currentTimeMillis() - start;
-        log.info("Done in " + (duration / 1000f) + " s");
-    }*/
-
     @Test
     public void external() {
         List<ExecutionTest> resultList = new ArrayList<>();
